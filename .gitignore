@@ -127,3 +127,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+data
+sgns.weibo.word
+vocab
+README_CHINESE.md
+logs
+checkpoints
+.DS_store
