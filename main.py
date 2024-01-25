@@ -9,7 +9,8 @@ from model import Model
 from torch.utils.data import DataLoader
 import torch.nn as nn
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+import torch.nn.functional as F
 
 def main():
     args = parse_args()
@@ -31,11 +32,11 @@ def main():
     train_texts, valid_texts, train_features, valid_features, train_labels, valid_labels = train_test_split(texts, features, labels, test_size=args.valid_size, random_state=args.random_state, stratify=labels)
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    bert_model = AutoModel.from_pretrained(args.model_name)
-    model = Model(args, bert_model)
+    bert_model = AutoModel.from_pretrained(args.model_name, output_attentions=True)
+    model = Model(bert_model)
 
-    train_encodings = tokenizer(train_texts, padding='max_length', truncation=True, max_length=512)
-    valid_encodings = tokenizer(valid_texts, padding='max_length', truncation=True, max_length=512)
+    train_encodings = tokenizer(list(train_texts), padding='max_length', truncation=True, max_length=512)
+    valid_encodings = tokenizer(list(valid_texts), padding='max_length', truncation=True, max_length=512)
 
     train_dataset = Dataset(train_encodings, train_features, train_labels)
     valid_dataset = Dataset(valid_encodings, valid_features, valid_labels)
@@ -79,11 +80,11 @@ def main():
     model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
 
-    best_acc = best_f1 = 0.
+    best_acc = best_f1 = best_auc = 0.
     with tqdm(total=num_training_steps) as pbar:
         for epoch in range(args.num_epochs):
             epoch_loss = 0.
-            all_preds, all_labels = [], []
+            all_preds, all_labels, all_logits = [], [], []
             for i, batch in enumerate(train_dataloader):
                 model.train()
                 input_ids = batch['input_ids'].to(device)
@@ -112,26 +113,31 @@ def main():
                 epoch_loss += loss.item()
                 all_preds += logits.argmax(1).tolist()
                 all_labels += labels.tolist()
+                all_logits += F.softmax(logits).tolist()
             if epoch < 999:
                 model.eval()
-                test_acc, test_f1, test_loss = evaluation(model, valid_dataloader, criterion)  
+                test_acc, test_f1, test_auc, test_loss = evaluation(model, valid_dataloader, criterion)  
                 if test_acc > best_acc:
                     best_acc = test_acc
-                if test_f1 > best_f1:
                     best_f1 = test_f1
+                    best_auc = test_auc
                     torch.save(model.state_dict(), output_dir + args.save_name)
-                train_acc, train_f1, train_loss = accuracy_score(all_labels, all_preds), \
+                    model.bert_model.save_pretrained(os.path.join(output_dir, 'bert'))
+                    tokenizer.save_pretrained(os.path.join(output_dir, 'bert'))
+                train_acc, train_f1, train_auc, train_loss = accuracy_score(all_labels, all_preds), \
                                                   f1_score(all_labels, all_preds, average='macro'), \
+                                                  roc_auc_score(all_labels, all_logits, average='macro', multi_class='ovr'), \
                                                   epoch_loss / len(train_dataloader)
                 print(f'Epoch: {epoch+1:02}')
-                print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc*100:.2f}% | Train F1: {train_f1*100:.2f}%')
-                print(f'\tTest  Loss: {test_loss:.3f} | Test  Acc: {test_acc*100:.2f}% | Test  F1: {test_f1*100:.2f}%')
+                print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc*100:.2f}% | Train F1: {train_f1*100:.2f}% | Train Auc: {train_auc*100:.2f}%')
+                print(f'\tTest  Loss: {test_loss:.3f} | Test  Acc: {test_acc*100:.2f}% | Test  F1: {test_f1*100:.2f}% | Test Auc: {test_auc*100:.2f}%')
                 logger.info(f'Epoch: {epoch+1:02}')
-                logger.info(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc*100:.2f}% | Train F1: {train_f1*100:.2f}%')
-                logger.info(f'\tTest  Loss: {test_loss:.3f} | Test  Acc: {test_acc*100:.2f}% | Test  F1: {test_f1*100:.2f}%')
+                logger.info(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc*100:.2f}% | Train F1: {train_f1*100:.2f}% | Train Auc: {train_auc*100:.2f}%')
+                logger.info(f'\tTest  Loss: {test_loss:.3f} | Test  Acc: {test_acc*100:.2f}% | Test  F1: {test_f1*100:.2f}% | Test Auc: {test_auc*100:.2f}%')
                 
-    print(f'Best Test Acc: {best_acc*100:.2f}% | Best Test F1: {best_f1*100:.2f}%')
-    logger.info(f'Best Test Acc: {best_acc*100:.2f}% | Best Test F1: {best_f1*100:.2f}%')
+    print(f'Best Test Acc: {best_acc*100:.2f}% | Best Test F1: {best_f1*100:.2f}% | Best Test Auc: {best_auc*100:.2f}%')
+    logger.info(f'Best Test Acc: {best_acc*100:.2f}% | Best Test F1: {best_f1*100:.2f}% | Best Test Auc: {best_auc*100:.2f}%')
+
 
 if __name__ == '__main__':
     main()
